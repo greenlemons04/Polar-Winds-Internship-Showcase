@@ -1,188 +1,338 @@
 # Mine System — Technical Breakdown
 
-During my 2026 internship with Nexus Games, I designed and implemented a mine-based gameplay system for **Polar Winds**, a real-time multiplayer game built on the Atlas Arena platform.
+During my 2026 internship with Nexus Games, I designed and implemented a mine-based gameplay system for **Polar Winds**, a real-time multiplayer game developed on the Atlas Arena platform.
 
-The feature was developed inside an existing TypeScript multiplayer codebase and required changes across server gameplay logic, synchronized game state, client rendering, visual/audio feedback, scoring, and developer testing tools.
+The feature was integrated into an existing TypeScript multiplayer codebase and required work across server gameplay logic, synchronized state, client rendering, visual and audio feedback, scoring, gameplay iteration, and developer testing tools.
 
-I first implemented a larger prototype of the system and later revised it based on gameplay and presentation feedback. The final repository state is represented by commit `1738b68`.
+I initially implemented a larger prototype and later revised the system based on gameplay and presentation feedback. The final repository state is represented by commit `1738b68`.
+
+---
 
 ## Final Mine System
 
-The final version of the game contains three mine types:
+The final build contains three mine types:
 
 | Mine Type | Blast Behavior |
 | --- | --- |
 | **Square** | Clears a 3×3 area centered on the mine |
-| **Horizontal** | Clears the mine's entire visible row |
-| **Vertical** | Clears the mine's entire visible column |
+| **Horizontal** | Clears the entire visible row containing the mine |
+| **Vertical** | Clears the entire visible column containing the mine |
 
-The directional mine designs remain fixed in orientation so players can visually understand the direction of their blast before interacting with them.
+### Final Mine Designs
+
+<p align="center">
+  <img src="../Images/SquareMine.png" width="25%" alt="Square mine">
+  <img src="../Images/HorizontalMine.png" width="25%" alt="Horizontal mine">
+  <img src="../Images/VerticalMine.png" width="25%" alt="Vertical mine">
+</p>
+
+<p align="center">
+  <strong>Square</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>Horizontal</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>Vertical</strong>
+</p>
+
+The directional mines remain fixed in orientation so their blast direction can be understood visually before they are activated.
+
+---
 
 ## Color-Based Gameplay
 
 Each mine is associated with one of the game's three player colors:
 
-- Orange / RED
-- White / GREEN
-- Blue / BLUE
+- Orange / `RED`
+- White / `GREEN`
+- Blue / `BLUE`
 
-The mine system uses player perspective as part of the gameplay mechanic.
+Player perspective is an important part of the mechanic.
 
-A player cannot see mines matching their own color while those mines are inactive. Mines belonging to the other player colors remain visible.
+A player cannot see inactive mines matching their own color. Mines belonging to the other player colors remain visible.
 
-This means each player can see hazards that may threaten their teammates while their own hazards remain hidden from them.
+Once a mine has been triggered, it becomes visible regardless of the viewing player's color.
 
-Once a mine has been triggered, it becomes visible regardless of player perspective.
+### Player Perspectives
+
+The following screenshots show the board from each player-color perspective.
+
+#### Orange Player Perspective
+
+![Orange player board perspective](../Images/OrangePlayerBoardPOV.png)
+
+#### White Player Perspective
+
+![White player board perspective](../Images/WhitePlayerBoardPOV.png)
+
+#### Blue Player Perspective
+
+![Blue player board perspective](../Images/BluePlayerBoardPOV.png)
+
+Because each player sees a different set of hidden mines, the same board state can present different information depending on the active player.
+
+### Client Visibility Logic
+
+The final client keeps every mine synchronized locally and determines whether it should be visible based on the current player's color and the mine's triggered state.
+
+```ts
+const minesWithVisibility = useMemo(() => {
+  return mines.map((mine) => ({
+    mine,
+    visible:
+      !mineViewerColor ||
+      mine.triggered ||
+      mine.color === "NEUTRAL" ||
+      mine.color !== mineViewerColor,
+  }));
+}, [mines, mineViewerColor]);
+```
+
+This allows the gameplay rule to remain readable while still preserving the synchronized mine state received from the server.
+
+---
 
 ## Mine Triggering
 
-Only a player whose color matches a mine can activate that mine.
+Only a player whose color matches an inactive mine can trigger it.
 
-When a mine is triggered:
+When a mine activates:
 
-1. The mine enters a triggered state.
-2. Its blast pattern is calculated on the server.
+1. The mine enters its triggered state.
+2. Its blast area is calculated by the server.
 3. Player-created line cells inside the blast area are removed.
-4. A 5-point team penalty is applied.
-5. The server broadcasts the mine event to connected clients.
-6. The client displays an explosion effect and plays explosion audio.
+4. A **5-point team penalty** is applied.
+5. The server broadcasts the event to connected clients.
+6. Clients display the explosion effect and audio feedback.
 
-The mine itself is not immediately removed from the board.
+The mine itself is not immediately removed.
 
-Instead, it remains in a visibly triggered state.
+Instead, it remains on the board in a visibly activated state.
 
-## Team Resolution Mechanic
+---
 
-Triggered mines can be resolved by another player.
+## Explosion and Chain Reactions
 
-If a player of a different color moves onto a triggered mine, the mine is resolved and its 5-point team penalty is refunded.
+Mines caught inside another mine's blast area can also be triggered.
 
-This creates a cooperative mechanic in which one player's hidden hazard can become something another teammate must respond to.
+The final version deliberately limits the size of these reactions:
 
-The mine then returns to its normal state rather than being permanently removed.
+- The original explosion may activate one randomly selected mine inside its blast area.
+- That second mine performs its normal explosion and penalty behavior.
+- A mine activated through the chain cannot continue the chain into additional mines.
 
-## Chain Reactions
+This allowed chain reactions to create unpredictable gameplay without producing uncontrolled cascades across the entire board.
 
-Mine explosions can also trigger another mine caught inside their blast area.
+### Chain-Reaction Sequence
 
-The final implementation intentionally limits the chain reaction:
+<p align="center">
+  <img src="../Images/Mine_Trigger_ChainReact1.png" width="48%" alt="Mine triggering and beginning a chain reaction">
+  <img src="../Images/Mine_Trigger_ChainReact2.png" width="48%" alt="Mine chain reaction continuing">
+</p>
 
-- The original mine can trigger one randomly selected mine inside its blast area.
-- The chained mine performs its own full explosion and penalty behavior.
-- The chained mine cannot continue the reaction into additional mines.
+### Server-Side Chain Logic
 
-This keeps chain reactions unpredictable without allowing an unlimited cascade across the board.
+The server tracks the chain depth and only searches for another mine when the original mine is detonating.
+
+```ts
+// Chain reaction: the original blast may trigger one random nearby mine.
+// Chained mines still clear their own blast area, but cannot continue the chain.
+if (chainDepth === 0) {
+  const chainedCandidates = Array.from(this.state.mines).filter(
+    (otherMine) =>
+      !otherMine.triggered &&
+      otherMine.id !== detonatedMine.id &&
+      blastCellKeys.has(`${otherMine.x},${otherMine.y}`)
+  );
+
+  if (chainedCandidates.length > 0) {
+    const chainedMine =
+      chainedCandidates[
+        Math.floor(this.rng.next() * chainedCandidates.length)
+      ];
+
+    this.detonateMine(chainedMine, "chain", chainDepth + 1);
+  }
+}
+```
+
+This logic is handled by the server so connected clients receive the same resulting game state.
+
+---
+
+## Triggered Mine State and Team Resolution
+
+Triggered mines remain on the board rather than disappearing immediately.
+
+They receive stronger visual feedback so players can distinguish an activated mine from an inactive hazard.
+
+<p align="center">
+  <img src="../Images/Mines_Post_Activation.png" width="55%" alt="Mines remaining on the board after activation">
+</p>
+
+A triggered mine can then be resolved by a player of a different color.
+
+When another player moves onto the triggered mine:
+
+- The mine is resolved.
+- Its active 5-point team penalty is refunded.
+- The mine returns to its normal state.
+
+This creates a cooperative interaction where one player's hidden hazard becomes something another teammate can respond to.
+
+---
 
 ## Stage-Based Spawning
 
-Mine spawning scales as the game progresses.
+Mine spawning scales with game progression.
 
-Stage 1 contains no mines.
+- **Stage 1:** no mines are added.
+- **Stages 2–3:** one new mine per player color is added each stage.
+- **Later stages:** two new mines per player color are added each stage.
 
-Stages 2–3 add one mine for each player color per stage.
+Existing mines remain on the board when later stages introduce additional hazards.
 
-Later stages add two mines for each player color per stage.
+Mine-type selection is also weighted by stage. Square mines are favored earlier, while horizontal and vertical directional mines become increasingly likely as the game progresses.
 
-Existing mines remain on the board as new stages add additional hazards.
+Placement logic prevents mines from spawning:
 
-Mine type selection is also weighted by stage. Square mines are the most common early type, while horizontal and vertical directional mines become more likely as the game progresses.
+- On occupied board positions
+- On existing mines or actors
+- On a trail matching the mine's own color
 
-Mine placement avoids:
+A mine can still overlap a trail belonging to a different player color.
 
-- Occupied board positions
-- Existing mines and actors
-- A line whose color matches the mine being placed
+---
 
-A mine may still overlap another player's colored trail.
+## Multiplayer State
 
-## Multiplayer Architecture
+Mine data is stored as synchronized server state using Colyseus.
 
-Mine behavior is controlled through the server rather than being handled only on the client.
-
-Each mine is stored in synchronized game state with information including:
+Each mine contains information such as:
 
 - Board position
 - Unique ID
 - Player color
 - Mine type
 - Triggered state
-- Whether its score penalty is currently active
+- Whether its scoring penalty is active
 
-The client receives the synchronized mine state and uses it to determine rendering and visibility.
+The final synchronized mine types are:
 
-Gameplay events such as mine triggering, chain reactions, scoring changes, and mine resolution are processed by the server.
+```ts
+export type MineType =
+  | "square"
+  | "horizontal"
+  | "vertical";
+```
 
-This allowed the mine system to remain consistent across connected players.
+Gameplay events including detonation, chain reactions, penalties, and resolution are handled by the server rather than being simulated independently by each client.
 
-## Rendering and Feedback
+This keeps mine behavior consistent across multiplayer sessions.
 
-The client-side mine system uses **React Three Fiber** and **Three.js** to render the mines as 3D objects.
+---
 
-Each mine type has a different physical silhouette so its blast behavior can be recognized visually.
+## Rendering and Visual Feedback
 
-Triggered mines receive additional feedback, including:
+The client-side mine system uses **React Three Fiber** and **Three.js**.
 
-- Increased glow
-- Faster movement and pulsing
-- A bright animated ring
+Each mine type has a different physical silhouette:
+
+- Square mines use a compact central body.
+- Horizontal mines include left/right directional elements.
+- Vertical mines use the same design language oriented along the vertical board axis.
+
+Triggered mines receive additional feedback including:
+
+- Increased emissive glow
+- Faster vertical movement
+- Pulsing scale
+- An animated indicator ring
 - Temporary explosion effects
 - Explosion audio
 
-Mine visibility was also optimized during the final revision.
+During the final feedback revision, hidden mines were changed so they remain mounted in the scene while their visibility is toggled.
 
-Instead of repeatedly removing and recreating hidden mines when player perspectives change, mines remain mounted in the scene and their visibility is toggled.
+This avoids repeatedly destroying and recreating Three.js objects when switching player perspectives and helps reduce unnecessary WebGL work.
 
-This reduced unnecessary WebGL work when switching between player perspectives.
+---
 
 ## Explosion Audio
 
-I implemented client-side explosion feedback using the Web Audio API.
+I also implemented client-side explosion feedback using the Web Audio API.
 
-The effect combines:
+The effect combines components such as:
 
 - A low-frequency impact
 - A short filtered noise burst
-- Rapid volume and frequency falloff
+- Rapid frequency and volume falloff
 
-The audio system also safely handles situations where browser audio has not yet been activated by user interaction so an audio failure does not interrupt gameplay.
+Audio handling was designed so failure to initialize browser audio would not interrupt the underlying gameplay.
+
+---
 
 ## Developer Testing Tools
 
-I also implemented internal development tools to make the mine system easier to test.
+I also created internal development utilities to make testing later-stage mine behavior significantly faster.
 
-### Stage Skip
+### Server-Backed Stage Skip
 
-A developer stage-skip command advances the actual server game state rather than creating a client-only visual change.
+The development stage-skip control advances the actual server game state rather than only changing the client display.
 
-This allowed me to quickly test mine behavior at later stages without replaying the full game.
+This allowed me to move directly to later stages where more mines were present without replaying the earlier stages repeatedly.
 
-**F8** activates the stage skip while running locally.
+The local shortcut is:
+
+`F8`
+
+The client sends a real request to the active game room:
+
+```ts
+if (!room) {
+  console.warn(
+    "[DevStageControls] No active room yet. Start the game first."
+  );
+  return;
+}
+
+room.send("devStageUp", {});
+```
 
 ### Board Fill Tool
 
-A second tool fills available board cells with normal player line cells.
+I also added a development command that fills available board cells with normal player line cells.
 
-This made it possible to quickly create a dense board and visually test:
+The local shortcut is:
 
-- Square explosions
-- Horizontal explosions
-- Vertical explosions
-- Line destruction
+`F7`
+
+This made it much faster to test:
+
+- Square blast areas
+- Horizontal line destruction
+- Vertical line destruction
+- Explosion feedback
 - Chain reactions
+- Scoring and penalty behavior
 
-**F7** activates the board-fill tool while running locally.
+These tools reduced the amount of setup needed to repeatedly reproduce mine interactions during development.
 
-These tools reduced the time required to reproduce and test later-game mine behavior.
+---
 
 ## Room Randomization
 
-As part of the final feedback revision, I also changed room initialization so a new random seed is generated for each game room unless a specific seed is intentionally supplied.
+As part of my final feedback revision, I changed room initialization so a fresh random seed is generated for each game room unless an explicit seed is supplied.
 
-This prevented new solo and multiplayer sessions from repeatedly using the same fallback seed while still allowing an explicit seed to be provided when reproducible behavior is needed for testing.
+This prevented solo and multiplayer sessions from unintentionally reusing the same fallback seed every time.
+
+Explicit seeds are still supported, allowing deterministic behavior when reproducibility is useful for development or testing.
+
+---
 
 ## Iteration
 
-The first major implementation experimented with a larger system containing six mine types:
+The original mine-system prototype was broader than the final design.
+
+My first major implementation experimented with six mine types:
 
 - Square
 - Horizontal
@@ -191,27 +341,35 @@ The first major implementation experimented with a larger system containing six 
 - Diagonal
 - Cluster
 
-During development, the system was revised and the final build narrowed the mine set to three types:
+During testing and iteration, the design was narrowed to the three types used in the final build:
 
 **Square, Horizontal, and Vertical.**
 
-Other mechanics and feedback systems were also revised during testing.
+Other gameplay, scoring, visual-feedback, and chain-reaction behavior also changed during the development process.
 
-This process involved implementing the initial feature, testing it inside the existing game, evaluating gameplay and presentation feedback, and modifying the system before the final internship build.
+This gave me experience working through the full feature-development cycle:
+
+**implementation → integration → testing → feedback → revision**
+
+rather than treating the initial version of the feature as finished.
+
+---
 
 ## Contribution History
 
-### Initial Implementation
+### Initial Mine-System Implementation
 
 [984909f — Add mine system and gameplay improvements](https://github.com/sabidmahmud01/polar-winds-standalone/commit/984909f)
 
 This commit introduced the original mine system across the client and server.
 
-### Final Revision
+### Final Feedback Revision
 
 [1738b68 — Refine mine feedback and randomize room seeds](https://github.com/sabidmahmud01/polar-winds-standalone/commit/1738b68)
 
 This is the final commit in the internship repository and represents the final project state.
+
+---
 
 ## Technologies Used
 
@@ -219,15 +377,19 @@ This is the final commit in the internship repository and represents the final p
 - React
 - React Three Fiber
 - Three.js
-- Colyseus multiplayer state synchronization
+- Colyseus multiplayer synchronization
 - Web Audio API
 - Git / GitHub
 - Atlas Arena
 
+---
+
 ## Project Context
 
-Polar Winds was developed collaboratively by a five-person internship team.
+Polar Winds was developed collaboratively by a five-person internship team during my 2026 internship with Nexus Games.
 
-This page focuses specifically on the mine-system implementation, development tools, and related revisions that I contributed during my internship.
+This page focuses specifically on the mine-system implementation, development/testing utilities, and related revisions that I contributed.
+
+The complete game contains systems and work created by the rest of the team and should not be interpreted as my individual project.
 
 [View the original Polar Winds team repository](https://github.com/sabidmahmud01/polar-winds-standalone)
