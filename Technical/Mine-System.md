@@ -2,7 +2,7 @@
 
 During my 2026 internship with Nexus Games, I designed and implemented a mine-based gameplay system for Polar Winds and later revised the feature in response to gameplay and presentation feedback.
 
-This page documents my contribution through two commits from the shared team repository. Because Polar Winds was developed collaboratively, some systems continued to change between commits and after my work.
+This page documents my contribution through two commits from the shared team repository. Because Polar Winds was developed collaboratively, some systems changed between my initial implementation and final revision.
 
 ## Initial Implementation
 
